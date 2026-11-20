@@ -5,6 +5,20 @@ const Testimonial = require('../models/Testimonial');
 const Inquiry = require('../models/Inquiry');
 const Setting = require('../models/Setting');
 
+// Default fallback settings in case of database timeout / initial cold start
+const defaultSettings = {
+  companyName: 'Bluesky International',
+  tagline: 'Leading Swimming Pool Construction & Maintenance in Gujarat',
+  phone: '+91 81289 20702',
+  email: 'pritesh029@gmail.com',
+  whatsapp: '+91 81289 20702',
+  address: 'A-8, Laxmikant Ashram Rd, Rashi Circle, Bhulabhai Desai Park, Hari Darshan Society, Katargam, Surat, Gujarat 395004',
+  experienceYears: 19,
+  poolsBuilt: 720,
+  happyClients: 680,
+  expertTeam: 45
+};
+
 // Settings in-memory cache (60s TTL)
 let cachedSettings = null;
 let lastSettingsFetch = 0;
@@ -16,25 +30,30 @@ const getCompanySettings = async (forceRefresh = false) => {
   if (!forceRefresh && cachedSettings && (now - lastSettingsFetch < SETTINGS_CACHE_TTL)) {
     return cachedSettings;
   }
-  let settings = await Setting.findOne().lean();
-  if (!settings) {
-    const created = await Setting.create({});
-    settings = created.toObject ? created.toObject() : created;
+  try {
+    let settings = await Setting.findOne().lean();
+    if (!settings) {
+      const created = await Setting.create({});
+      settings = created.toObject ? created.toObject() : created;
+    }
+
+    // Automatic calculation of Years of Mastery based on founding year (2008)
+    const currentYear = new Date().getFullYear();
+    const foundingYear = settings.foundingYear || 2008;
+    const autoCalculatedYears = Math.max(16, currentYear - foundingYear);
+
+    // Keep experienceYears always up to date automatically
+    settings.experienceYears = settings.experienceYears
+      ? Math.max(Number(settings.experienceYears), autoCalculatedYears)
+      : autoCalculatedYears;
+
+    cachedSettings = settings;
+    lastSettingsFetch = now;
+    return cachedSettings;
+  } catch (error) {
+    console.error('getCompanySettings DB error:', error.message);
+    return cachedSettings || defaultSettings;
   }
-
-  // Automatic calculation of Years of Mastery based on founding year (2008)
-  const currentYear = new Date().getFullYear();
-  const foundingYear = settings.foundingYear || 2008;
-  const autoCalculatedYears = Math.max(16, currentYear - foundingYear);
-
-  // Keep experienceYears always up to date automatically
-  settings.experienceYears = settings.experienceYears
-    ? Math.max(Number(settings.experienceYears), autoCalculatedYears)
-    : autoCalculatedYears;
-
-  cachedSettings = settings;
-  lastSettingsFetch = now;
-  return cachedSettings;
 };
 
 // Reset settings cache
@@ -47,25 +66,27 @@ exports.invalidateSettingsCache = () => {
 exports.getHome = async (req, res) => {
   try {
     const [settings, services, projects, products, testimonials] = await Promise.all([
-      getCompanySettings(),
-      Service.find({ isActive: true }).select('title slug shortDescription image features order').sort({ order: 1 }).limit(6).lean(),
-      Project.find({ isFeatured: true }).select('title slug category location coverImage').limit(6).lean(),
-      Product.find({ isFeatured: true }).select('name slug category price image inStock').limit(4).lean(),
-      Testimonial.find({ isApproved: true }).select('clientName designation location rating review avatar').limit(4).lean()
+      getCompanySettings().catch(() => defaultSettings),
+      Service.find({ isActive: true }).select('title slug shortDescription image features order').sort({ order: 1 }).limit(6).lean().catch(e => { console.error('Service error:', e.message); return []; }),
+      Project.find({ isFeatured: true }).select('title slug category location coverImage').limit(6).lean().catch(e => { console.error('Project error:', e.message); return []; }),
+      Product.find({ isFeatured: true }).select('name slug category price image inStock').limit(4).lean().catch(e => { console.error('Product error:', e.message); return []; }),
+      Testimonial.find({ isApproved: true }).select('clientName designation location rating review avatar').limit(4).lean().catch(e => { console.error('Testimonial error:', e.message); return []; })
     ]);
 
+    const activeSettings = settings || defaultSettings;
+
     res.render('public/home', {
-      title: `${settings.companyName} | Swimming Pool Construction, Filtration & Maintenance`,
-      settings,
-      services,
-      projects,
-      products,
-      testimonials,
+      title: `${activeSettings.companyName || 'Bluesky International'} | Swimming Pool Construction, Filtration & Maintenance`,
+      settings: activeSettings,
+      services: services || [],
+      projects: projects || [],
+      products: products || [],
+      testimonials: testimonials || [],
       path: '/'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error fetching home data:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
@@ -73,21 +94,23 @@ exports.getHome = async (req, res) => {
 exports.getAbout = async (req, res) => {
   try {
     const [settings, testimonials, projects] = await Promise.all([
-      getCompanySettings(),
-      Testimonial.find({ isApproved: true }).select('clientName designation location rating review avatar').lean(),
-      Project.find({ isFeatured: true }).select('title slug coverImage location category').limit(3).lean()
+      getCompanySettings().catch(() => defaultSettings),
+      Testimonial.find({ isApproved: true }).select('clientName designation location rating review avatar').lean().catch(() => []),
+      Project.find({ isFeatured: true }).select('title slug coverImage location category').limit(3).lean().catch(() => [])
     ]);
 
+    const activeSettings = settings || defaultSettings;
+
     res.render('public/about', {
-      title: `About Us | ${settings.companyName} | Luxury Swimming Pool Engineers`,
-      settings,
-      testimonials,
-      projects,
+      title: `About Us | ${activeSettings.companyName || 'Bluesky International'} | Luxury Swimming Pool Engineers`,
+      settings: activeSettings,
+      testimonials: testimonials || [],
+      projects: projects || [],
       path: '/about'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getAbout:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
@@ -95,19 +118,21 @@ exports.getAbout = async (req, res) => {
 exports.getServices = async (req, res) => {
   try {
     const [settings, services] = await Promise.all([
-      getCompanySettings(),
-      Service.find({ isActive: true }).select('title slug shortDescription fullDescription image features order').sort({ order: 1 }).lean()
+      getCompanySettings().catch(() => defaultSettings),
+      Service.find({ isActive: true }).select('title slug shortDescription fullDescription image features order').sort({ order: 1 }).lean().catch(() => [])
     ]);
+
+    const activeSettings = settings || defaultSettings;
 
     res.render('public/services', {
       title: `Our Services | Swimming Pool Construction & Renovation`,
-      settings,
-      services,
+      settings: activeSettings,
+      services: services || [],
       path: '/services'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getServices:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
@@ -130,21 +155,23 @@ exports.getProducts = async (req, res) => {
     ];
 
     const [settings, products] = await Promise.all([
-      getCompanySettings(),
-      Product.find(filter).select('name slug category price brand shortDescription image inStock isFeatured').sort({ createdAt: -1 }).lean()
+      getCompanySettings().catch(() => defaultSettings),
+      Product.find(filter).select('name slug category price brand shortDescription image inStock isFeatured').sort({ createdAt: -1 }).lean().catch(() => [])
     ]);
+
+    const activeSettings = settings || defaultSettings;
 
     res.render('public/products', {
       title: `Pool Equipment & Products | Pumps, Filters, Lights`,
-      settings,
-      products,
+      settings: activeSettings,
+      products: products || [],
       categories,
       selectedCategory: category || 'all',
       path: '/products'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getProducts:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
@@ -166,51 +193,53 @@ exports.getGallery = async (req, res) => {
     ];
 
     const [settings, projects] = await Promise.all([
-      getCompanySettings(),
-      Project.find(filter).select('title slug category location coverImage dimensions completionYear').sort({ createdAt: -1 }).lean()
+      getCompanySettings().catch(() => defaultSettings),
+      Project.find(filter).select('title slug category location coverImage dimensions completionYear').sort({ createdAt: -1 }).lean().catch(() => [])
     ]);
+
+    const activeSettings = settings || defaultSettings;
 
     res.render('public/gallery', {
       title: `Project Gallery | Swimming Pools Portfolio`,
-      settings,
-      projects,
+      settings: activeSettings,
+      projects: projects || [],
       categories,
       selectedCategory: category || 'all',
       path: '/gallery'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getGallery:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
 // Contact page
 exports.getContact = async (req, res) => {
   try {
-    const settings = await getCompanySettings();
+    const settings = await getCompanySettings().catch(() => defaultSettings);
     res.render('public/contact', {
       title: `Contact Us | Get a Free Swimming Pool Quote`,
-      settings,
+      settings: settings || defaultSettings,
       path: '/contact'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getContact:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
 // 3D Survey page
 exports.get3dSurvey = async (req, res) => {
   try {
-    const settings = await getCompanySettings();
+    const settings = await getCompanySettings().catch(() => defaultSettings);
     res.render('public/3d-survey', {
       title: `Free 3D Laser Site Survey & Architectural Blueprint | Blue Sky International`,
-      settings,
+      settings: settings || defaultSettings,
       path: '/3d-survey'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in get3dSurvey:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
@@ -250,10 +279,12 @@ exports.submitInquiry = async (req, res) => {
       budget: (budget && budget.trim()) ? budget.trim() : '',
       message: finalMessage,
       status: 'New'
+    }).catch(err => {
+      console.error('Inquiry create DB warning:', err.message);
     });
 
     // 2. Build Direct WhatsApp Concierge URL (Uses Dynamic Settings from Admin Panel)
-    const companySettings = await getCompanySettings();
+    const companySettings = await getCompanySettings().catch(() => defaultSettings);
     const waPhone = (companySettings && companySettings.whatsapp)
       ? companySettings.whatsapp.replace(/\D/g, '')
       : '918128920702';
@@ -298,21 +329,23 @@ exports.submitInquiry = async (req, res) => {
 exports.getPrivatePools = async (req, res) => {
   try {
     const [settings, projects] = await Promise.all([
-      getCompanySettings(),
+      getCompanySettings().catch(() => defaultSettings),
       Project.find({
         category: { $in: ['Residential Villa Pools', 'Infinity Edge Pools'] }
-      }).select('title slug category location coverImage dimensions').limit(6).lean()
+      }).select('title slug category location coverImage dimensions').limit(6).lean().catch(() => [])
     ]);
 
+    const activeSettings = settings || defaultSettings;
+
     res.render('public/private-pools', {
-      title: `Private Swimming Pools | Luxury Villa & Residential Pools | ${settings.companyName}`,
-      settings,
-      projects,
+      title: `Private Swimming Pools | Luxury Villa & Residential Pools | ${activeSettings.companyName || 'Bluesky International'}`,
+      settings: activeSettings,
+      projects: projects || [],
       path: '/private-swimming-pools'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getPrivatePools:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
 
@@ -320,19 +353,20 @@ exports.getPrivatePools = async (req, res) => {
 exports.getPoolTypes = async (req, res) => {
   try {
     const [settings, projects] = await Promise.all([
-      getCompanySettings(),
-      Project.find().select('title slug category location coverImage').limit(8).lean()
+      getCompanySettings().catch(() => defaultSettings),
+      Project.find().select('title slug category location coverImage').limit(8).lean().catch(() => [])
     ]);
 
+    const activeSettings = settings || defaultSettings;
+
     res.render('public/pool-types', {
-      title: `Swimming Pool Types & Designs | ${settings.companyName}`,
-      settings,
-      projects,
+      title: `Swimming Pool Types & Designs | ${activeSettings.companyName || 'Bluesky International'}`,
+      settings: activeSettings,
+      projects: projects || [],
       path: '/pool-types'
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Server Error');
+    console.error('Error in getPoolTypes:', error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
-

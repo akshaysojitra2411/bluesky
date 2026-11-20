@@ -56,7 +56,11 @@ connectDB();
 
 // Ensure DB is connected for serverless environments (e.g. Vercel)
 app.use(async (req, res, next) => {
-  await connectDB();
+  try {
+    await connectDB();
+  } catch (e) {
+    console.error('Database connection middleware warning:', e.message);
+  }
   next();
 });
 
@@ -72,7 +76,11 @@ app.use(methodOverride('_method'));
 
 // View engine & cache (Compiled into memory for ultra-fast TTFB)
 app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
+const fs = require('fs');
+const viewsDir = fs.existsSync(path.join(__dirname, 'views'))
+  ? path.join(__dirname, 'views')
+  : path.resolve(process.cwd(), 'views');
+app.set('views', viewsDir);
 app.enable('view cache');
 
 // Favicon shortcut
